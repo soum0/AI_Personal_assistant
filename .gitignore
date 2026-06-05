@@ -8,7 +8,7 @@ client_secrets.json
 data/
 
 # Vector store — large binary, rebuilt by rag-ingest
-chroma_db/
+# chroma_db/
 
 # Eval outputs (check these in manually after review)
 evals/results.json

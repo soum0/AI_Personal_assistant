@@ -1,0 +1,57 @@
+version: '3.9'
+
+# chroma_db is populated by rag-ingest (profile: tools) and read by persona-api.
+# Both services bind-mount the same host directory so the vectors persist across restarts.
+
+services:
+
+  # ── persona-api ──────────────────────────────────────────────────────────────
+  persona-api:
+    build:
+      context: ./packages/persona-api
+    ports:
+      - "8000:8000"
+    env_file: .env
+    volumes:
+      - ./chroma_db:/app/chroma_db
+      - ./data:/app/data:ro        # resume PDF (read-only at runtime)
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s   # chromadb takes ~10s to init on first load
+
+  # ── chat-ui ──────────────────────────────────────────────────────────────────
+  chat-ui:
+    build:
+      context: ./packages/chat-ui
+    ports:
+      - "3000:3000"
+    env_file: .env
+    depends_on:
+      persona-api:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:3000 2>/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ── rag-ingest ───────────────────────────────────────────────────────────────
+  # One-shot job: run with --profile tools once after initial deploy.
+  #   docker-compose --profile tools run --rm rag-ingest
+  # Re-run any time you update your resume or add new GitHub repos.
+  rag-ingest:
+    build:
+      context: ./packages/rag
+    command: python ingest.py
+    env_file: .env
+    volumes:
+      - ./data:/app/data:ro        # resume PDF input
+      - ./chroma_db:/app/chroma_db # vector store output
+    profiles:
+      - tools

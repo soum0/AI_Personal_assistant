@@ -1,0 +1,83 @@
+{
+  "name": "Soumya's AI Representative",
+
+  "transcriber": {
+    "provider": "deepgram",
+    "model":    "nova-2",
+    "language": "en"
+  },
+
+  "model": {
+    "provider":    "groq",
+    "model":       "llama-3.1-8b-instant",
+    "temperature": 0.4,
+    "systemPrompt": "You are Soumya's AI representative on a phone call.\nKeep responses under 3 sentences for voice.\n\nRetrieved context:\n{rag_context}\n\nIf asked something not in the context above, say \"Soumya hasn't briefed me on that specifically, but I can have them follow up.\"\nNever make up facts about Soumya.\nFor scheduling, use the check_availability and book_meeting tools.",
+
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name":        "check_availability",
+          "description": "Check Soumya's calendar for free interview slots.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "days_ahead": {
+                "type":        "integer",
+                "description": "How many days ahead to check. Defaults to 7.",
+                "default":     7
+              }
+            },
+            "required": []
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name":        "book_meeting",
+          "description": "Book a confirmed meeting slot with Soumya.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "slot_iso": {
+                "type":        "string",
+                "description": "ISO 8601 datetime for the meeting, e.g. 2026-06-10T14:00:00+05:30."
+              },
+              "name": {
+                "type":        "string",
+                "description": "Caller's full name."
+              },
+              "email": {
+                "type":        "string",
+                "description": "Caller's email address for the calendar invite."
+              }
+            },
+            "required": ["slot_iso", "name", "email"]
+          }
+        }
+      }
+    ]
+  },
+
+  "voice": {
+    "provider":        "11labs",
+    "voiceId":         "adam",
+    "stability":       0.5,
+    "similarityBoost": 0.75
+  },
+
+  "firstMessage": "Hi! I'm Soumya's AI representative. Soumya asked me to handle their initial screening calls. What would you like to know about their background, or shall we find a time to meet?",
+
+  "serverUrl": "REPLACE_WITH_PERSONA_API_URL/voice-webhook",
+
+  "endCallFunctionEnabled": true,
+  "recordingEnabled":       true,
+  "maxDurationSeconds":     600,
+  "silenceTimeoutSeconds":  30,
+
+  "_notes": {
+    "setup":   "Run setup_vapi.py to create this assistant via the API and provision a phone number.",
+    "context": "The {rag_context} placeholder is filled in dynamically per call by the assistant-request handler in persona-api/voice_webhook.py."
+  }
+}

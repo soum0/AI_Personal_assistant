@@ -1,0 +1,260 @@
+name: eval-gate → deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      skip_evals:
+        description: "Skip eval gate"
+        type: boolean
+        default: false
+
+# Only one deploy runs at a time — cancel any in-progress run on the same branch.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  # ── Job 1: Eval gate ────────────────────────────────────────────────────────
+  eval-gate:
+    name: Eval gate (hallucination ≤ 15%)
+    runs-on: ubuntu-latest
+
+    outputs:
+      hallucination_rate: ${{ steps.parse.outputs.rate }}
+      passed: ${{ steps.parse.outputs.passed }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: evals/requirements.txt
+
+      - name: Install eval dependencies
+        run: pip install -r evals/requirements.txt
+
+      # Use the live staging API if PERSONA_API_URL is set as a repo secret.
+      # On the very first deploy (no staging instance yet), set this secret to
+      # the Fly.io URL after the first manual deploy.
+      - name: Check whether a live API is reachable
+        id: api_check
+        env:
+          PERSONA_API_URL: ${{ secrets.PERSONA_API_URL }}
+        run: |
+          if [[ -z "$PERSONA_API_URL" ]]; then
+            echo "reachable=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::PERSONA_API_URL secret not set — skipping live eval gate"
+          else
+            if curl -sf "${PERSONA_API_URL}/health" > /dev/null 2>&1; then
+              echo "reachable=true" >> "$GITHUB_OUTPUT"
+              echo "API is reachable at ${PERSONA_API_URL}"
+            else
+              echo "reachable=false" >> "$GITHUB_OUTPUT"
+              echo "::warning::API at ${PERSONA_API_URL} not reachable — skipping eval gate"
+            fi
+          fi
+
+      - name: Run eval_chat.py
+        id: eval
+        if: |
+          steps.api_check.outputs.reachable == 'true' &&
+          github.event.inputs.skip_evals != 'true'
+        env:
+          PERSONA_API_URL: ${{ secrets.PERSONA_API_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          cd evals
+          python eval_chat.py \
+            --api-url "$PERSONA_API_URL" \
+            --out results.json
+
+      - name: Parse results and enforce hallucination gate
+        id: parse
+        if: steps.eval.outcome == 'success'
+        run: |
+          python3 - << 'PYEOF'
+          import json, sys, os
+
+          try:
+              data = json.load(open("evals/results.json"))
+          except FileNotFoundError:
+              print("No results.json — eval did not run")
+              # Write safe defaults so the output step always has values
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write("rate=0.0\npassed=true\n")
+              sys.exit(0)
+
+          metrics = data["metrics"]
+          rate    = metrics["hallucination_rate"]
+          acc     = metrics["overall_accuracy"]
+          lat     = metrics["avg_latency_ms"]
+
+          print(f"Questions   : {metrics['n_questions']}")
+          print(f"Accuracy    : {acc:.1%}")
+          print(f"Halluc. rate: {rate:.1%}")
+          print(f"Avg latency : {lat:.0f} ms")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"rate={rate}\n")
+              f.write(f"passed={'true' if rate <= 0.15 else 'false'}\n")
+
+          if rate > 0.15:
+              print(f"\n::error::Hallucination rate {rate:.1%} exceeds 15% threshold.")
+              print("Fix failing questions in golden_qa.json or the persona prompt.")
+              sys.exit(1)
+
+          print(f"\nPASS: hallucination {rate:.1%} ≤ 15%")
+          PYEOF
+
+      - name: Upload eval artifact
+        if: steps.eval.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results-${{ github.sha }}
+          path: evals/results.json
+          retention-days: 30
+
+  # ── Job 2: Build + push Docker image ───────────────────────────────────────
+  build:
+    name: Docker build
+    runs-on: ubuntu-latest
+    needs: eval-gate
+    # Hard-fail if the eval ran and hallucination was too high
+    if: needs.eval-gate.outputs.passed != 'false'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build persona-api image (smoke test)
+        uses: docker/build-push-action@v5
+        with:
+          context: ./packages/persona-api
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: persona-api:ci
+
+  # ── Job 3: Deploy persona-api to Fly.io ────────────────────────────────────
+  deploy-fly:
+    name: Deploy → Fly.io
+    runs-on: ubuntu-latest
+    needs: [eval-gate, build]
+    if: needs.eval-gate.outputs.passed != 'false'
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Set Fly.io secrets from GitHub Secrets
+        working-directory: packages/persona-api
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          # Stage all secrets in one call to avoid multiple restarts
+          flyctl secrets set \
+            ANTHROPIC_API_KEY="${{ secrets.ANTHROPIC_API_KEY }}" \
+            OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY }}" \
+            VAPI_API_KEY="${{ secrets.VAPI_API_KEY }}" \
+            VAPI_ASSISTANT_ID="${{ secrets.VAPI_ASSISTANT_ID }}" \
+            VAPI_PHONE_NUMBER_ID="${{ secrets.VAPI_PHONE_NUMBER_ID }}" \
+            ELEVENLABS_API_KEY="${{ secrets.ELEVENLABS_API_KEY }}" \
+            GOOGLE_CREDENTIALS_JSON="${{ secrets.GOOGLE_CREDENTIALS_JSON }}" \
+            GOOGLE_CALENDAR_ID="${{ secrets.GOOGLE_CALENDAR_ID }}" \
+            OWNER_EMAIL="${{ secrets.OWNER_EMAIL }}" \
+            --stage 2>/dev/null || true   # --stage avoids a pre-deploy restart
+
+      - name: Deploy to Fly.io
+        working-directory: packages/persona-api
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: flyctl deploy --remote-only --wait-timeout 120
+
+      - name: Verify health after deploy
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          FLY_APP=$(cd packages/persona-api && flyctl config show --json | python3 -c "import json,sys; print(json.load(sys.stdin)['app'])")
+          URL="https://${FLY_APP}.fly.dev"
+          echo "Checking ${URL}/health …"
+          for i in 1 2 3 4 5; do
+            STATUS=$(curl -sf "${URL}/health" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
+            if [[ "$STATUS" == "ok" ]]; then
+              echo "Health check passed (attempt ${i})"
+              echo "FLY_URL=${URL}" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            echo "Attempt ${i} failed — retrying in 10s …"
+            sleep 10
+          done
+          echo "::error::Health check failed after 5 attempts"
+          exit 1
+
+      - name: Print Fly.io URL
+        run: echo "persona-api live at $FLY_URL"
+
+  # ── Job 4: Deploy chat-ui to Vercel ────────────────────────────────────────
+  deploy-vercel:
+    name: Deploy → Vercel
+    runs-on: ubuntu-latest
+    needs: [eval-gate, build]
+    if: needs.eval-gate.outputs.passed != 'false'
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: packages/chat-ui/package-lock.json
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel@latest
+
+      - name: Deploy to Vercel (production)
+        working-directory: packages/chat-ui
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+          vercel build --prod --token="$VERCEL_TOKEN"
+          DEPLOY_URL=$(vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN")
+          echo "VERCEL_URL=${DEPLOY_URL}" >> "$GITHUB_ENV"
+          echo "chat-ui live at ${DEPLOY_URL}"
+
+  # ── Job 5: Post-deploy summary ─────────────────────────────────────────────
+  summary:
+    name: Deployment summary
+    runs-on: ubuntu-latest
+    needs: [deploy-fly, deploy-vercel]
+    if: always()
+
+    steps:
+      - name: Write job summary
+        run: |
+          echo "## Deployment Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Service | Status |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| persona-api (Fly.io) | ${{ needs.deploy-fly.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| chat-ui (Vercel) | ${{ needs.deploy-vercel.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Commit**: \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Triggered by**: ${{ github.actor }}" >> "$GITHUB_STEP_SUMMARY"

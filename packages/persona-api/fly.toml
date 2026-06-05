@@ -1,0 +1,67 @@
+# Fly.io configuration for persona-api
+# Docs: https://fly.io/docs/reference/configuration/
+#
+# First-time setup:
+#   cd packages/persona-api
+#   flyctl launch --no-deploy        # creates the app and linked volume
+#   flyctl volumes create chroma_data --size 1 --region sin
+#   flyctl secrets set ANTHROPIC_API_KEY=... OPENAI_API_KEY=... (see .env)
+#   flyctl deploy
+#
+# After deploy:
+#   flyctl ssh console              # SSH in to run rag-ingest if needed
+
+app            = "soumya-persona-api"
+primary_region = "sin"   # Singapore — lowest latency from India
+
+# ── Build ─────────────────────────────────────────────────────────────────────
+# Dockerfile is at the root of this package (packages/persona-api/Dockerfile)
+[build]
+
+# ── Non-secret environment variables ─────────────────────────────────────────
+# Secrets (ANTHROPIC_API_KEY, OPENAI_API_KEY, VAPI_*, GOOGLE_*) are set via:
+#   flyctl secrets set KEY=value ...
+[env]
+  CHROMA_PERSIST_DIR = "/data/chroma_db"
+  CHROMA_COLLECTION  = "persona"
+  PERSONA_NAME       = "Soumya"
+  ALLOWED_ORIGINS    = "*"
+  CALL_LOG_PATH      = "/data/call_log.jsonl"
+
+# ── HTTP service ──────────────────────────────────────────────────────────────
+[http_service]
+  internal_port       = 8000
+  force_https         = true
+  # Keep the machine always running — voice latency requires <2s cold start.
+  auto_stop_machines  = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type       = "connections"
+    hard_limit = 25
+    soft_limit = 20
+
+  # Fly.io HTTP health check
+  [[http_service.checks]]
+    grace_period = "30s"
+    interval     = "15s"
+    method       = "GET"
+    path         = "/health"
+    protocol     = "http"
+    timeout      = "10s"
+
+# ── Machine sizing ────────────────────────────────────────────────────────────
+# shared-cpu-1x + 512 MB is the Fly.io free-tier allocation.
+# Upgrade to 1x 1GB if ChromaDB OOMs during large ingest.
+[[vm]]
+  cpu_kind  = "shared"
+  cpus      = 1
+  memory_mb = 512
+
+# ── Persistent volume ─────────────────────────────────────────────────────────
+# Stores chroma_db vectors + call_log.jsonl across deploys.
+# Create once: flyctl volumes create chroma_data --size 1 --region sin
+[[mounts]]
+  source      = "chroma_data"
+  destination = "/data"

@@ -1,0 +1,68 @@
+{
+  "name": "Kanishk AI Persona",
+  "model": {
+    "provider": "groq",
+    "model": "llama-3.1-8b-instant",
+    "temperature": 0.3,
+    "systemPrompt": "You are Kanishk's AI representative. Speak naturally in first person as Kanishk. Your goals: answer questions about his background and fit for the Scaler AI Engineer role, handle follow-ups fluidly, and help book a meeting. Use the answer_question tool whenever you need to recall specific facts. Use get_availability and book_meeting for scheduling. Never invent details — if unsure, say so honestly.",
+    "functions": [
+      {
+        "name": "answer_question",
+        "description": "Answer a question about Kanishk's background, skills, or projects using his resume and GitHub data.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "question": {
+              "type": "string",
+              "description": "The question to answer about Kanishk."
+            }
+          },
+          "required": ["question"]
+        }
+      },
+      {
+        "name": "get_availability",
+        "description": "Get Kanishk's available meeting slots for the coming week.",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      },
+      {
+        "name": "book_meeting",
+        "description": "Book a confirmed meeting with Kanishk.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Caller's full name."
+            },
+            "email": {
+              "type": "string",
+              "description": "Caller's email address for the calendar invite."
+            },
+            "slot_iso": {
+              "type": "string",
+              "description": "ISO 8601 datetime for the meeting, e.g. 2026-06-10T14:00:00+05:30"
+            }
+          },
+          "required": ["name", "email", "slot_iso"]
+        }
+      }
+    ]
+  },
+  "voice": {
+    "provider": "11labs",
+    "voiceId": "adam",
+    "stability": 0.5,
+    "similarityBoost": 0.75
+  },
+  "firstMessage": "Hi! I'm Kanishk's AI representative. I can answer questions about his background and book a time for you to meet him. How can I help?",
+  "serverUrl": "REPLACE_WITH_YOUR_VOICE_WEBHOOK_URL/vapi/webhook",
+  "endCallFunctionEnabled": true,
+  "recordingEnabled": true,
+  "maxDurationSeconds": 600,
+  "silenceTimeoutSeconds": 30
+}

@@ -1,0 +1,35 @@
+# Secrets — never commit
+.env
+client_secrets.json
+*.pem
+*.key
+
+# Resume and personal data — must stay private
+data/
+
+# Vector store — large binary, rebuilt by rag-ingest
+chroma_db/
+
+# Eval outputs (check these in manually after review)
+evals/results.json
+evals/voice_results.json
+evals/rag_metrics.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+dist/
+.pytest_cache/
+
+# Node
+node_modules/
+.next/
+packages/chat-ui/.next/
+
+# macOS
+.DS_Store
+
+# Call logs (may contain PII)
+*.jsonl

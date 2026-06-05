@@ -1,0 +1,15 @@
+github:
+  repos: []  # Add your repo URLs here, e.g.: - https://github.com/username/repo
+  max_commits: 30
+
+resume:
+  path: ./data/resume.pdf
+
+chroma:
+  persist_dir: ./chroma_db
+  collection: persona
+
+embedding:
+  provider: local
+  model: all-MiniLM-L6-v2
+  batch_size: 100

@@ -1,0 +1,11 @@
+# Eval suite dependencies
+anthropic>=0.30.0
+openai==1.35.3
+httpx==0.27.2
+python-dotenv==1.0.1
+rich==13.7.1
+reportlab==4.2.2
+
+# RAG retriever (eval_rag.py imports packages/rag/retriever.py directly)
+chromadb==0.5.3
+tiktoken==0.7.0
